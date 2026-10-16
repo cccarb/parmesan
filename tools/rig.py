@@ -332,6 +332,37 @@ for st in list(_adj):
 if fill2: Fout=np.vstack([Fout,np.array(fill2,dtype=Fout.dtype)])
 print('second pass fill faces',len(fill2))
 print('hole fill faces',len(fillF))
+# ---------- skin under the collar sinks inside the band, so it can never show through it while he moves ----------
+# (there was also a leftover lump of skin exactly where the tag ring hangs)
+def nodeM(n):
+    M=np.eye(4)
+    if 'rotation' in n:
+        x,y,z,w=n['rotation']; M[:3,:3]=np.array([[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],[2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],[2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
+    if 'translation' in n: M[:3,3]=n['translation']
+    return M
+_PJ,_PB=load(os.path.join(ROOT,'source','parts_split.glb'))
+_cn=[n for n in _PJ['nodes'] if n.get('name')=='tripo_part_7'][0]; _M=nodeM(_cn)
+CP=acc(_PJ,_PB,_PJ['meshes'][_cn['mesh']]['primitives'][0]['attributes']['POSITION']).astype(np.float64)@_M[:3,:3].T+_M[:3,3]
+_c=CP.mean(0); _ax=np.linalg.svd(CP-_c)[2][2]
+_e1=np.array([1.,0,0])-_ax*_ax[0]; _e1/=np.linalg.norm(_e1); _e2=np.cross(_ax,_e1)
+def _polar(P):
+    d=P-_c; h=d@_ax; d=d-np.outer(h,_ax); return h,np.linalg.norm(d,axis=1),np.arctan2(d@_e2,d@_e1)
+ch,cr,ca=_polar(CP); hlo,hhi=ch.min(),ch.max(); hmid=(hlo+hhi)/2; hhalf=(hhi-hlo)/2
+vh,vr,va=_polar(Vo)
+cand=np.where((vh>hlo-0.004)&(vh<hhi+0.004)&(vr<cr.max()+0.05))[0]
+moved=0
+for i in cand:
+    da=np.abs((ca-va[i]+np.pi)%(2*np.pi)-np.pi)
+    near=(da<0.16)
+    if not near.any(): continue
+    loc=near&(np.abs(ch-vh[i])<0.014)
+    outer=cr[loc].max() if loc.any() else cr[near].max(); inner=cr[near].min()
+    t=np.clip(1-abs(vh[i]-hmid)/hhalf,0,1); t=t*t*(3-2*t)              # 1 in the middle of the band, 0 at its edges
+    lim=(inner-0.003)*t+(outer-0.005)*(1-t)
+    if vr[i]>lim:
+        d=Vo[i]-_c; hv=d@_ax; rad=d-hv*_ax
+        Vo[i]=_c+hv*_ax+rad*(lim/vr[i]); moved+=1
+print('skin verts tucked under collar',moved)
 attrs={}
 attrs['POSITION']=add_acc(Vo,5126,'VEC3',minmax=True)
 attrs['NORMAL']=add_acc(No.astype(np.float32),5126,'VEC3')
@@ -345,14 +376,8 @@ for name,data in [('basecolor',bcj),('roughness_metal',rmj),('normal',nmj)]:
     imgs.append({'name':name,'mimeType':'image/jpeg','bufferView':add_view(data)})
 # ---------- accessories from the split model (rigid pieces, animated in the page) ----------
 PJ,PBIN=load(os.path.join(ROOT,'source','parts_split.glb'))
-ACC={'tripo_part_7':'Acc_Collar','tripo_part_10':'Acc_TagLink','tripo_part_17':'Acc_TagRing','tripo_part_20':'Acc_TagBit','tripo_part_8':'Acc_Tag',
+ACC={'tripo_part_7':'Acc_Collar','tripo_part_10':'Acc_TagLink','tripo_part_17':'Acc_TagRing','tripo_part_8':'Acc_Tag',
      'tripo_part_6':'Acc_Hoop','tripo_part_16':'Acc_HoopLink','tripo_part_11':'Acc_Star','tripo_part_18':'Acc_StudL','tripo_part_18.001':'Acc_StudR','tripo_part_9':'Acc_EarRing'}
-def nodeM(n):
-    M=np.eye(4)
-    if 'rotation' in n:
-        x,y,z,w=n['rotation']; M[:3,:3]=np.array([[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],[2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],[2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
-    if 'translation' in n: M[:3,3]=n['translation']
-    return M
 acc_meshes=[]; acc_mats=[]; acc_imgs=[]
 for n in PJ['nodes']:
     if n.get('name') not in ACC: continue

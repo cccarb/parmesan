@@ -222,7 +222,28 @@ const roller=new THREE.Group(); roller.position.x=-SIDE_W; dog.add(roller);
 const model=new THREE.Group(); model.scale.setScalar(DOG_SCALE); model.position.x=-DOG_CX*DOG_SCALE+SIDE_W; roller.add(model);
 const bones={}; const rest={}; const dogMeshes=[]; const pawMeshes=[];
 let headPiv=null;
-const ears=[{name:'Ear_L',s:1,flick:0},{name:'Ear_R',s:-1,flick:0}];
+const ears=[{name:'Ear_L',s:1,flick:0,tw:-1,twA:0,twD:false},{name:'Ear_R',s:-1,flick:0,tw:-1,twA:0,twD:false}];
+let UP_SIDE=1;   // +1 if the dog's left side is +x in the body (he sleeps on his right, so the left side faces up)
+// quick ear twitches: which = 0 left, 1 right, 2 both
+function twitchEar(which,amp,dbl){ears.forEach((e,i)=>{if(which===2||which===i){e.tw=i===1&&which===2?-0.04:0;e.twA=amp;e.twD=!!dbl;}});}
+function twitchValue(e,dt){
+  if(e.tw<-0.5)return 0;
+  e.tw+=dt; const t=e.tw; let v=0;
+  if(t>=0&&t<0.13)v=Math.sin(Math.PI*t/0.13);
+  else if(e.twD&&t>=0.17&&t<0.29)v=0.7*Math.sin(Math.PI*(t-0.17)/0.12);
+  if(t>(e.twD?0.3:0.14))e.tw=-1;
+  return v*e.twA;
+}
+let earNext=4;
+function earTwitchTimer(dt){
+  earNext-=dt; if(earNext>0)return;
+  const asleep=(D.mode==='lie'&&D.t>SLEEP.asleep)||(D.mode==='pet'&&D.petLying);
+  const r=Math.random();
+  if(asleep){twitchEar(r<0.5?0:1,0.55,false);earNext=rand(5,11);}
+  else if(D.mode==='pet'){twitchEar(r<0.4?0:r<0.8?1:2,0.8,Math.random()<0.5);earNext=rand(1.4,3);}
+  else if(D.mode==='lie'||D.mode==='wake'){earNext=1;}
+  else {twitchEar(r<0.35?0:r<0.7?1:2,1,Math.random()<0.45);earNext=rand(3.5,8);}
+}
 const mouth=new THREE.Object3D(); mouth.name='Mouth_Anchor';
 const tongueG=new THREE.Group(); tongueG.name='Tongue_Pivot';
 const tongue=mk(SPH(0.032,20,14),M.tongue,tongueG,[0,-0.04,0.004],[0.95,1.55,0.42]); tongue.castShadow=false; tongueG.visible=false;
@@ -277,7 +298,7 @@ function makeDangle(names,pivot,tip,parent,opt){
   const h=holderFor(names,pivot,parent&&parent.holder);
   const d0=tip.clone().sub(pivot); const L=d0.length()*DOG_SCALE; d0.normalize();
   const D={h,holder:h,names,pivot,d0,L,parent,k:opt.k,c:opt.c,hang:opt.hang||0,max:opt.max||1.0,anchor:opt.anchor||null,tipW:null,vel:new V3(),q:new THREE.Quaternion(),
-    nRest:opt.normal||null,nFrom:opt.nFrom||null,restDot:0,nW:new V3()};
+    nRest:opt.normal||null,nFrom:opt.nFrom||null,restDot:0,nW:new V3(),collide:opt.collide||null,relHang:!!opt.relHang,g0:new V3(0,-1,0)};
   if(D.nRest){D.nRest=D.nRest.clone().normalize();D.restDot=D.d0.dot(D.nRest);}
   acc.push(D); return D;
 }
@@ -288,13 +309,18 @@ function setupAccessories(){
   const cp=meshPoints(['Acc_Collar']); const ext=(f)=>cp.reduce((a,b)=>f(b)>f(a)?b:a);
   const cA=[ext(p=>p.z),ext(p=>-p.z),ext(p=>p.x),ext(p=>-p.x)].map(p=>makeAnchor(p));
   const cCenter=centerOf(['Acc_Collar']);
-  const collar={holder:holderFor(['Acc_Collar'],cCenter,null),anchors:cA,rest:cA.map((a,i)=>[ext(p=>p.z),ext(p=>-p.z),ext(p=>p.x),ext(p=>-p.x)][i].clone()),
+  const collar={holder:holderFor(['Acc_Collar','Acc_TagLink'],cCenter,null),anchors:cA,rest:cA.map((a,i)=>[ext(p=>p.z),ext(p=>-p.z),ext(p=>p.x),ext(p=>-p.x)][i].clone()),
     center:cCenter,wob:new V3(),wobV:new V3(),prevQ:null,prevPos:null,prevVel:new V3()};
   acc.collar=collar;
-  // tag hangs from the collar
-  const link=meshPoints(['Acc_TagLink']); const top=link.reduce((a,b)=>b.y>a.y?b:a);
-  const chestN=ext(p=>p.z).clone().sub(cCenter); chestN.y=0;
-  acc.tag=makeDangle(['Acc_TagLink','Acc_TagRing','Acc_TagBit','Acc_Tag'],top.clone(),centerOf(['Acc_Tag']),collar,{k:90,c:5,hang:0.85,max:0.9,normal:chestN});
+  // the big link stays on the collar; the small ring and the bone swing from the bottom of the link
+  const link=meshPoints(['Acc_TagLink']); const ly=link.reduce((m,p)=>Math.min(m,p.y),1e9);
+  const lbot=link.filter(p=>p.y<ly+0.006); const pivotT=lbot.reduce((s,p)=>s.add(p),new V3()).divideScalar(lbot.length);
+  const tagC=centerOf(['Acc_Tag']); const bp0=bodyMesh.geometry.attributes.position;
+  const bn0=bodyMesh.geometry.attributes.normal;
+  const chest=[...skinUsed].filter(i=>_v.fromBufferAttribute(bp0,i).distanceTo(tagC)<0.15&&_v.y<pivotT.y+0.01&&bn0.getZ(i)>0.2&&domBone(i).name!=='Head');   // front of the chest only, never the throat or chin
+  const tp=meshPoints(['Acc_Tag']); const tagPts=tp.filter((p,i)=>i%4===0).map(p=>p.clone().sub(pivotT));   // the bone itself; the little ring stays tucked at the collar
+  acc.tag=makeDangle(['Acc_TagRing','Acc_Tag'],pivotT,tagC,collar,{k:90,c:5,hang:0.85,max:0.9,relHang:true,
+    collide:{vi:chest,pts:tagPts,margin:0.004,P:chest.map(()=>new V3()),N:chest.map(()=>new V3())}});
   // hoop through the left ear, the star swings from the hoop
   const hoop=meshPoints(['Acc_Hoop']); let pier=hoop[0],pd=1e9;
   const bpos=bodyMesh.geometry.attributes.position;
@@ -310,6 +336,32 @@ function setupAccessories(){
   acc.ear=makeDangle(['Acc_EarRing'],ep.clone(),centerOf(['Acc_EarRing']),null,{k:260,c:9,hang:0,max:0.22,anchor:earA,normal:skinNormal(earA.vi)});
   // studs sit still in the skin
   acc.studs=['Acc_StudL','Acc_StudR'].filter(n=>accMeshes[n]).map(n=>{const c=centerOf([n]);return {h:holderFor([n],c,null),a:makeAnchor(c)};});
+}
+// keep a swinging piece outside the chest: its sample points are tested against the skinned chest surface
+const _cq=new THREE.Quaternion(), _cw=new V3(), _cn=new V3();
+function chestSurface(C){
+  const pos=bodyMesh.geometry.attributes.position, nor=bodyMesh.geometry.attributes.normal, M=bodyMesh.matrixWorld;
+  for(let k=0;k<C.vi.length;k++){const i=C.vi[k];
+    C.P[k].fromBufferAttribute(pos,i); _cn.fromBufferAttribute(nor,i).multiplyScalar(0.01).add(C.P[k]);
+    bodyMesh.boneTransform(i,C.P[k]); C.P[k].applyMatrix4(M); bodyMesh.boneTransform(i,_cn); _cn.applyMatrix4(M);
+    C.N[k].copy(_cn).sub(C.P[k]).normalize();}
+}
+function pushOut(D,Pw,dir,restW,qPW){   // returns true if dir was changed
+  const C=D.collide, m=C.margin*DOG_SCALE; let moved=false;
+  for(let it=0;it<3;it++){
+    _cq.setFromUnitVectors(restW,dir).multiply(qPW);
+    let worst=0, wn=null, wl=1;
+    for(const p of C.pts){
+      _cw.copy(p).applyQuaternion(_cq).multiplyScalar(DOG_SCALE).add(Pw);
+      let bj=-1,bd=1e9; for(let k=0;k<C.P.length;k++){const d=C.P[k].distanceToSquared(_cw); if(d<bd){bd=d;bj=k;}}
+      if(bd>0.0016)continue;   // farther than 4 cm from the chest: nothing to touch
+      const s=_v.copy(_cw).sub(C.P[bj]).dot(C.N[bj])-m;
+      if(s<worst){worst=s;wn=C.N[bj];wl=Math.max(_cw.distanceTo(Pw),D.L*0.8);}
+    }
+    if(!wn)break;
+    _v2.copy(dir).multiplyScalar(D.L).addScaledVector(wn,-worst*D.L/wl); dir.copy(_v2).normalize(); moved=true;
+  }
+  return moved;
 }
 const _p=new V3(), _pw=new V3(), _qw=new THREE.Quaternion(), _qmw=new THREE.Quaternion();
 function updateAccessories(dt){
@@ -351,8 +403,13 @@ function updateAccessories(dt){
     else {const ph=D.parent.holder; ph.updateMatrixWorld(true); pQ.copy(ph.quaternion); pPos.copy(D.pivot).sub(ph.userData.pivot).applyQuaternion(pQ).add(ph.position);}
     const Pw=pPos.clone().applyMatrix4(model.matrixWorld); const qPW=_qmw.clone().multiply(pQ);
     const rest=D.d0.clone().applyQuaternion(qPW);
+    if(D.collide)chestSurface(D.collide);
     if(D.nRest){ if(D.nFrom) D.nW.copy(D.nFrom.nW); else if(D.parent&&!D.anchor) D.nW.copy(D.nRest).applyQuaternion(qPW); else D.nW.copy(D.nRest).applyQuaternion(qPW); }
-    const target=rest.clone().multiplyScalar(1-D.hang).addScaledVector(DOWN,D.hang).normalize();
+    let target;
+    if(D.relHang){   // hangs as modelled when the collar is level; tilting the collar swings it back toward gravity by `hang`
+      _q.copy(qPW).invert(); _v.copy(DOWN).applyQuaternion(_q); _q.setFromUnitVectors(D.g0,_v); _qm.identity().slerp(_q,D.hang);
+      target=D.d0.clone().applyQuaternion(_qm).applyQuaternion(qPW).normalize();
+    } else target=rest.clone().multiplyScalar(1-D.hang).addScaledVector(DOWN,D.hang).normalize();
     if(!D.tipW){D.tipW=Pw.clone().addScaledVector(target,D.L);D.vel.set(0,0,0);}
     const steps=3, h=Math.min(dt,0.05)/steps;
     for(let i=0;i<steps;i++){
@@ -360,10 +417,12 @@ function updateAccessories(dt){
       D.vel.addScaledVector(goal.sub(D.tipW),D.k*h); D.vel.multiplyScalar(Math.exp(-D.c*h)); D.tipW.addScaledVector(D.vel,h);
       const r=D.tipW.clone().sub(Pw); const len=r.length()||1; r.divideScalar(len);
       if(D.nRest){const lim=D.restDot-0.04, dn=r.dot(D.nW); if(dn<lim){r.addScaledVector(D.nW,lim-dn).normalize(); const vn=D.vel.dot(D.nW); if(vn<0)D.vel.addScaledVector(D.nW,-vn*1.3);}}   // never swing into the ear / chest
+      if(D.collide){const before=r.clone(); if(pushOut(D,Pw,r,rest,qPW)){const c=r.clone().sub(before); if(c.lengthSq()>1e-12){c.normalize(); const vn=D.vel.dot(c); if(vn<0)D.vel.addScaledVector(c,-vn*1.2);}}}
       D.tipW.copy(Pw).addScaledVector(r,D.L); D.vel.addScaledVector(r,-D.vel.dot(r));
     }
     let dirW=D.tipW.clone().sub(Pw).normalize();
     const angTo=Math.acos(clamp(dirW.dot(target),-1,1)); if(angTo>D.max){dirW=target.clone().lerp(dirW,D.max/angTo).normalize();}
+    if(D.collide)pushOut(D,Pw,dirW,rest,qPW);
     if(D.nRest){const lim=D.restDot-0.04, dn=dirW.dot(D.nW); if(dn<lim)dirW.addScaledVector(D.nW,lim-dn).normalize();}
     const dirM=dirW.applyQuaternion(_qmw.clone().invert());
     const restM=D.d0.clone().applyQuaternion(pQ);
@@ -427,7 +486,12 @@ const LIE_AFTER=90;            // seconds without any touch before he lies down
 let lastInteract=now(), zzT=0;
 const touched=()=>{lastInteract=now();};
 
-function setMode(m){D.mode=m;D.t=0;D.headBob=0;}
+function setMode(m){
+  if(D.mode==='wake'&&m!=='pet'&&m!=='lie'){if(m!=='boop')D.wakeNext=m;return;}             // still getting up: do that next
+  const lying=(D.mode==='lie'||(D.mode==='pet'&&D.petLying))&&P.side>0.3;
+  if(lying&&!['pet','lie','wake'].includes(m)){D.wakeNext=m==='boop'?null:m;D.petLying=false;m='wake';}
+  D.mode=m;D.t=0;D.headBob=0;
+}
 function moveTo(tx,tz,maxSpeed,dt,stop){
   const tg=new V3(tx,0,tz); clampDog(tg); tx=tg.x; tz=tg.z;
   const dx=tx-dog.position.x,dz=tz-dog.position.z,dist=Math.hypot(dx,dz);
@@ -481,6 +545,8 @@ const SLEEP={
   jerks:[3.0,6.0],
   asleep:10.2
 };
+// getting up: roll back onto the belly into a sit, look around, then stand
+const WAKE={side:[[0,1],[0.25,1],[1.0,0]],lie:[[0,0],[0.3,0.6],[0.95,1],[1.5,1],[2.1,0]],nod:[[0,0.2],[1.0,0]],eyes:[[0,0.1],[0.5,0.35],[0.9,1]],standAt:2.9,end:3.4};
 function brain(dt,tNow){
   resetT(); D.t+=dt; gait.turn=0;
   let look=camera.position; let lookOffset=-0.22;
@@ -505,8 +571,8 @@ function brain(dt,tNow){
     for(const j of SLEEP.jerks){if(st>=j&&st-dt<j){for(const q of ears)q.flick=1.2;}}
     if(st>SLEEP.asleep){T.eyes=0.1; zzT-=dt; if(zzT<=0){zzT=2.2; snore();}}
     if(lastInteract>D.sleepStamp){
-      if(ptr.kind==='pet'&&P.side>0.6){D.petLying=true;setMode('pet');D.petting=true;D.lastPet=tNow;}   // stroking a sleeping dog: he stays down and enjoys it
-      else {setMode('idle');pickIdle();D.idle.kind='watch';for(const q of ears)q.flick=1;}
+      if(ptr.kind==='pet'&&P.side>0.6){D.petLying=true;setMode('pet');D.petting=true;D.lastPet=tNow;twitchEar(Math.random()<0.5?0:1,0.6,false);}   // stroking a sleeping dog: he stays down and enjoys it
+      else {setMode('idle');}
     }
   } else if(m==='idle'){
     if(tNow-lastInteract>LIE_AFTER){setMode('lie');D.sleepStamp=lastInteract;}
@@ -539,9 +605,23 @@ function brain(dt,tNow){
     if(moveTo(D.gotoTarget.x,D.gotoTarget.z,1.7,dt,0.1)){setMode('idle');pickIdle();D.idle.kind='watch';D.idle.turning=true;}
   } else if(m==='pet'){
     D.speed=damp(D.speed,0,10,dt);
-    T.eyes=0.04;T.ear=0.05;T.wagAmp=1;T.wagSpd=17;T.tongue=D.t>0.5?0.85:0; if(D.petLying){T.side=1;look=null;}
-    T.lean=clamp(D.petSide,-1,1)*0.13; T.roll=clamp(D.petSide,-1,1)*0.24+0.08; lookOffset=-0.22;
+    if(D.petLying){   // stroking him while he sleeps: he stays down, eyes shut, and only his tail thumps
+      D.sideDirect=true; P.side=1; P.nod=keys(SLEEP.nod,99); look=null;
+      T.side=1;T.eyes=0.1;T.ear=0.35;T.tongue=0;T.tailUp=0.35;T.wagAmp=0.9;T.wagSpd=10;
+      zzT-=dt; if(zzT<=0){zzT=2.6; snore();}
+    } else {
+      T.eyes=0.04;T.ear=0.05;T.wagAmp=1;T.wagSpd=17;T.tongue=D.t>0.5?0.85:0;
+      T.lean=clamp(D.petSide,-1,1)*0.13; T.roll=clamp(D.petSide,-1,1)*0.24+0.08; lookOffset=-0.22;
+    }
     if(!D.petting&&tNow-D.lastPet>0.9){if(D.petLying){D.petLying=false;setMode('lie');D.t=SLEEP.asleep+0.5;D.sleepStamp=lastInteract;}else{setMode('idle');pickIdle();D.idle.kind='watch';D.idle.dur=3;}}
+  } else if(m==='wake'){
+    D.speed=damp(D.speed,0,9,dt); D.sideDirect=true; D.petLying=false;
+    P.side=keys(WAKE.side,D.t); P.nod=keys(WAKE.nod,D.t); T.eyes=keys(WAKE.eyes,D.t);
+    T.lie=keys(WAKE.lie,D.t); T.sit=D.t<WAKE.standAt?1:0; D.sitHold=false; T.tailUp=D.t<0.8?0.35:1; T.wagAmp=D.t>1.6?0.5:0.05; T.wagSpd=9; T.ear=D.t<0.9?0.35:0.95;
+    look=D.t>1.0?camera.position:null;
+    if(D.t>=1.2&&D.t-dt<1.2)twitchEar(2,1,true);
+    if(D.t>WAKE.end){const n=D.wakeNext; D.wakeNext=null; D.sideDirect=false;
+      if(n&&n!=='idle'){D.mode=n;D.t=0;} else {D.mode='idle';D.t=0;pickIdle();D.idle.kind='watch';D.idle.dur=2.5;}}
   } else if(m==='boop'){
     D.speed=damp(D.speed,0,10,dt);
     T.ear=1.2;T.wagAmp=1;T.wagSpd=16;T.roll=0.3*D.tiltSign;
@@ -628,13 +708,14 @@ function applyPose(dt,look,lookOffset){
     const rate=(k==='paw'||k==='eyes')?10:(k==='lie'?2.2:(k==='tongue'?7:5));
     P[k]=damp(P[k],T[k],rate,dt);
   }
+  if(D.mode==='wake')P.lie=T.lie;   // the getting-up timeline drives this directly
   // head look
   let yaw=0,pitch=0.05;
   if(look){const a=lookAngles(look,lookOffset);yaw=a.yaw;pitch=a.pitch;}
   P.yaw=damp(P.yaw,yaw,6,dt); P.pitch=damp(P.pitch,pitch,6,dt);
 
   const run=gait.run, amp=gait.amp, Bn=bones;
-  if(D.sideDirect&&D.mode==='lie'){ /* P.side / P.nod come straight from the sleep timeline */ }
+  if(D.sideDirect&&(D.mode==='lie'||D.mode==='wake'||(D.mode==='pet'&&D.petLying))){ /* P.side / P.nod come straight from the timelines */ }
   else {D.sideDirect=false; P.side=damp(P.side,T.side,3,dt); P.nod=damp(P.nod,0,6,dt);}
   const SIDE=P.side;
   roller.rotation.z=0;
@@ -658,7 +739,7 @@ function applyPose(dt,look,lookOffset){
   model.position.y=0; dog.updateMatrixWorld(true);
   const pyFR=Bn.Paw_FR.getWorldPosition(tmp).y, pyFL=Bn.Paw_FL.getWorldPosition(tmp).y;
   const front=P.paw>0.3?pyFR:Math.min(pyFR,pyFL);
-  model.position.y=(REST_PAW_Y-front)*settle*(1-LIE)+bob+P.jump-LIE_DROP*LIE;
+  model.position.y=(REST_PAW_Y-front)*settle*(1-LIE)+bob+P.jump-LIE_DROP*LIE*(1-SIDE);
   dog.updateMatrixWorld(true);
   if(LIE>0.01){   // front legs stretch forward until the paws rest on the floor
     for(const k of['FL','FR']){
@@ -692,13 +773,15 @@ function applyPose(dt,look,lookOffset){
   }
   roller.rotation.z=SIDE*1.5;
   // ears
+  earTwitchTimer(dt);
   for(const e of ears){
     e.flick=damp(e.flick,0,6,dt);
-    const relax=1-P.ear;
-    Bn[e.name].rotation.set(-relax*0.45-e.flick*0.28,0,-e.s*relax*0.3);
+    const relax=1-P.ear, tw=twitchValue(e,dt);
+    Bn[e.name].rotation.set(-relax*0.45-e.flick*0.28-tw*0.5,e.s*tw*0.25,-e.s*(relax*0.3+tw*0.5));
   }
   // tail
-  Bn.Tail.rotation.set(lerp(-1.2,0,P.tailUp),Math.sin(clockT*P.wagSpd)*P.wagAmp*0.75,0);
+  const wagS=Math.sin(clockT*P.wagSpd)*P.wagAmp*0.75, wagUp=-UP_SIDE*P.wagAmp*0.75*(0.5+0.5*Math.sin(clockT*P.wagSpd));
+  Bn.Tail.rotation.set(lerp(-1.2,0,P.tailUp),lerp(wagS,wagUp,clamp(SIDE,0,1)),0);
   // eyes
   D.blinkT-=dt; if(D.blinkT<0){D.blink=0;if(D.blinkT<-0.11){D.blink=1;D.blinkT=rand(2,5);}}
   const open=Math.max(0.12,P.eyes*D.blink);
@@ -848,7 +931,7 @@ function onMove(e){
   if(ptr.kind==='pet'){
     const h=hitDog(x,y);
     if(h&&ptr.moved>8){
-      if(D.mode!=='pet'){D.petLying=(D.mode==='lie'&&P.side>0.6);setMode('pet');Haptics.petStart();ptr.purrAcc=0;}
+      if(D.mode!=='pet'){D.petLying=(D.mode==='lie'&&P.side>0.6);setMode('pet');Haptics.petStart();ptr.purrAcc=0;twitchEar(D.petLying?(Math.random()<0.5?0:1):2,D.petLying?0.6:1,!D.petLying);earNext=rand(1.4,2.5);}
       D.petting=true; D.lastPet=t; tried.pet=true;
       const l=dog.worldToLocal(h.point.clone()); D.petSide=damp(D.petSide,clamp(l.x/0.3,-1,1),8,0.05);
       ptr.heartAcc+=d; if(ptr.heartAcc>70){ptr.heartAcc=0;hearts(null,1,x,y-18);}
