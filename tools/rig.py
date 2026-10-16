@@ -83,7 +83,9 @@ lab=np.full(n,idx['Chest'])
 lab[V[:,2]<-0.10]=idx['Hips']
 head=sd>0.005
 lab[head]=idx['Head']
-ear=head&((V[:,1]>0.84)|((V[:,1]>0.70)&(np.abs(V[:,0]-CX)>0.17)&(V[:,2]<0.26)))
+# ear flaps: outward of the flat skull top, above a line sloping down to the outer ear edge, inside the thin ear band in z
+_u=np.abs(V[:,0]-CX)
+ear=head&(_u>0.10)&(V[:,1]>0.86-0.75*(_u-0.11))&(V[:,2]>0.05)&(V[:,2]<0.25)
 lab[ear&(V[:,0]>CX)]=idx['Ear_L']; lab[ear&(V[:,0]<CX)]=idx['Ear_R']
 tail=(V[:,2]<-0.395)&(V[:,1]>0.42)
 lab[tail]=idx['Tail']
@@ -116,6 +118,17 @@ Wv=W[inv]
 for k,c in [('Eye_L',eyeL),('Eye_R',eyeR)]:
     d=np.linalg.norm(V-c,axis=1); w=np.clip((0.042-d)/0.016,0,1)*(sd>0)
     Wv[:,idx['Head']]-=np.minimum(w,Wv[:,idx['Head']]); Wv[:,idx[k]]+=w
+# ears: only the flaps move. Any ear pull that leaked into the skull goes back to the head,
+# and the bend happens in a short hinge just inside the ear base, so the head never twitches with them
+from scipy.spatial import cKDTree
+_skull=head&~ear
+_skT=cKDTree(V[_skull])
+for _k in ['Ear_L','Ear_R']:
+    _e=idx[_k]; _in=lab==_e
+    _leak=(~_in)&(Wv[:,_e]>0.01); print(_k,'leaked into skull',int(_leak.sum()))
+    Wv[~_in,idx['Head']]+=Wv[~_in,_e]; Wv[~_in,_e]=0
+    _d,_=_skT.query(V[_in]); _w=np.clip(_d/0.03,0,1); _w=_w*_w*(3-2*_w)
+    Wv[_in]=0; Wv[_in,_e]=_w; Wv[_in,idx['Head']]=1-_w
 # metal earrings ride rigidly with the nearest of head / left ear
 ring=metal&(V[:,1]>0.62)
 for i in np.where(ring)[0]:
