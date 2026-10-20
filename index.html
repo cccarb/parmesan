@@ -436,7 +436,7 @@ const dogBlob=makeBlob(2.2); dogBlob.visible=false;
 
 /* ---------- toys ---------- */
 const BALL_R=0.11;
-const ballTex=(()=>{const c=document.createElement('canvas');c.width=512;c.height=256;const g=c.getContext('2d');g.fillStyle='#d3ea45';g.fillRect(0,0,512,256);g.strokeStyle='#ffffff';g.lineWidth=14;g.lineCap='round';g.beginPath();for(let x=0;x<=512;x+=4){const y=128+70*Math.sin(x/512*Math.PI*4);x?g.lineTo(x,y):g.moveTo(x,y);}g.stroke();const t=new THREE.CanvasTexture(c);t.encoding=THREE.sRGBEncoding;return t;})();
+const ballTex=(()=>{const c=document.createElement('canvas');c.width=512;c.height=256;const g=c.getContext('2d');g.fillStyle='#f65b0b';g.fillRect(0,0,512,256);g.strokeStyle='#ffffff';g.lineWidth=14;g.lineCap='round';g.beginPath();for(let x=0;x<=512;x+=4){const y=128+70*Math.sin(x/512*Math.PI*4);x?g.lineTo(x,y):g.moveTo(x,y);}g.stroke();const t=new THREE.CanvasTexture(c);t.encoding=THREE.sRGBEncoding;return t;})();
 const ball={mesh:mk(SPH(BALL_R,32,20),new THREE.MeshStandardMaterial({map:ballTex,roughness:0.85}),scene),pos:new V3(),vel:new V3(),state:'none',blob:makeBlob(0.5),restT:0};
 ball.mesh.visible=false; ball.blob.visible=false;
 
